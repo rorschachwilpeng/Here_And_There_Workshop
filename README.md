@@ -1,40 +1,40 @@
-# 地理音乐人格测试应用
+# Geo Music Personality Test App
 
-这是一个基于地理位置触发音乐与人格测试结果的Flutter移动应用程序。当用户进入由GeoJSON定义的特定地理区域时，应用会自动播放该区域对应的音乐，并显示相关的人格测试结果。
+This is a Flutter mobile application triggered by geographical location for music playback and personality test results. When users enter specific geographic areas defined by GeoJSON, the app automatically plays music corresponding to that area and displays related personality test results.
 
-## 功能特点
+## Features
 
-- 读取并解析GeoJSON文件中定义的地理区域
-- 实时跟踪用户位置，判断是否进入特定区域
-- 当用户进入某区域时，自动播放对应的音乐
-- 显示该区域关联的人格测试结果
-- 包含用于测试的模拟位置功能
+- Read and parse geographic areas defined in GeoJSON files
+- Track user location in real-time and determine if they enter specific areas
+- Automatically play corresponding music when users enter an area
+- Display personality test results associated with the area
+- Include simulated location features for testing
 
-## 技术栈
+## Technology Stack
 
-- Flutter框架
-- geolocator：用于获取用户位置
-- audioplayers：用于播放音乐
-- turf：用于地理空间分析，判断点是否在多边形内
-- permission_handler：管理应用权限
+- Flutter framework
+- geolocator: for obtaining user location
+- audioplayers: for playing music
+- turf: for geospatial analysis, determining if a point is within a polygon
+- permission_handler: managing application permissions
 
-## 使用方法
+## Usage Instructions
 
-1. 确保在`assets`文件夹中有一个有效的GeoJSON文件，命名为`test.geojson`
-2. GeoJSON文件中每个Feature应包含以下属性：
-   - `name`：区域名称
-   - `music_url`：音乐URL
-   - `personality_result`：人格测试结果文本
-3. 运行应用并授予位置权限
-4. 进入定义的地理区域，应用将自动播放音乐并显示人格测试结果
+1. Ensure a valid GeoJSON file named `test.geojson` is in the `assets` folder
+2. Each Feature in the GeoJSON file should include the following properties:
+   - `name`: Area name
+   - `music_url`: Music URL
+   - `personality_result`: Personality test result text
+3. Run the application and grant location permissions
+4. Enter the defined geographic area, and the app will automatically play music and display personality test results
 
-## 测试模式
+## Test Mode
 
-应用包含测试模式，可通过界面底部的按钮模拟进入不同的地理区域：
-- "区域1"按钮：模拟进入测试区域1
-- "区域2"按钮：模拟进入测试区域2
-- "离开区域"按钮：模拟离开所有区域
+The application includes a test mode, where you can simulate entering different geographic areas via buttons at the bottom of the interface:
+- "Area 1" button: Simulate entering test area 1
+- "Area 2" button: Simulate entering test area 2
+- "Leave Area" button: Simulate leaving all areas
 
-## 开发扩展
+## Development Extensions
 
-要添加更多区域，只需在GeoJSON文件中添加新的Feature，确保包含所需的属性。应用将自动加载并处理新添加的区域。
+To add more areas, simply add new Features to the GeoJSON file, ensuring they contain the required properties. The application will automatically load and process the newly added areas.
