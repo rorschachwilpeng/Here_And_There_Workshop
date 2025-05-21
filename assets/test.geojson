@@ -1,0 +1,41 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Test Area 1",
+        "music_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+        "personality_result": "You are a creative person! You like to think of new ideas and have the ability to turn them into reality. Your innovative thinking makes you a valuable member of any team."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [121.4, 31.2],
+          [121.5, 31.2],
+          [121.5, 31.3],
+          [121.4, 31.3],
+          [121.4, 31.2]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Test Area 2",
+        "music_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+        "personality_result": "You are a meticulous analyst! You like to delve into problems, find the best solutions. Your logical thinking and problem-solving skills are impressive."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [121.5, 31.3],
+          [121.6, 31.3],
+          [121.6, 31.4],
+          [121.5, 31.4],
+          [121.5, 31.3]
+        ]]
+      }
+    }
+  ]
+} 
