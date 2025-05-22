@@ -7,7 +7,7 @@
         "name": "Area 1",
         "music_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
         "personality_result": "You are a creative person! You enjoy thinking of new ideas and have the ability to make them reality.",
-        "visibility": 50
+        "visibility": 25
       },
       "geometry": {
         "type": "Polygon",
@@ -26,7 +26,7 @@
         "name": "Area 2",
         "music_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
         "personality_result": "You are a meticulous analyst! You like to dive deep into problems and find optimal solutions.",
-        "visibility": 30
+        "visibility": 50
       },
       "geometry": {
         "type": "Polygon",
@@ -45,7 +45,7 @@
         "name": "Area 3",
         "music_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
         "personality_result": "You are deeply intuitive! You understand complex situations quickly and trust your instincts.",
-        "visibility": 15
+        "visibility": 75
       },
       "geometry": {
         "type": "Polygon",
@@ -64,7 +64,7 @@
         "name": "Area 4",
         "music_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
         "personality_result": "You are a natural leader! You inspire others with your confidence and vision.",
-        "visibility": 70
+        "visibility": 90
       },
       "geometry": {
         "type": "Polygon",
@@ -74,6 +74,25 @@
           [121.6, 31.5],
           [121.5, 31.5],
           [121.5, 31.4]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Area 5",
+        "visibility": 40,
+        "personality_result": "You are a creative person! You enjoy thinking of new ideas and have the ability to make them reality.",
+        "music_url": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [121.74, 31.54],
+          [121.76, 31.54],
+          [121.76, 31.56],
+          [121.74, 31.56],
+          [121.74, 31.54]
         ]]
       }
     }

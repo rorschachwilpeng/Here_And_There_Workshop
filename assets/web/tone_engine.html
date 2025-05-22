@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tone.js Music Engine</title>
+  <script src="https://unpkg.com/tone"></script>
+  <style>
+    body { background-color: #f0f0f0; padding: 20px; font-family: Arial; }
+    #status { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h2>Tone.js Music Engine</h2>
+  <div id="status">Status: Ready</div>
+  
+  <script>
+    // 音乐状态和参数
+    let isPlaying = false;
+    let synth = null;
+    let pattern = null;
+    let notes = ['C4', 'E4', 'G4', 'B4'];
+    let instrument = 'synth';
+    let tempo = 120;
+    let visibility = 50;
+    
+    // 音效处理器
+    let reverb = null;
+    let delay = null;
+    let filter = null;
+    
+    // 接收来自Flutter的消息
+    function handleMessageFromFlutter(message) {
+      const data = JSON.parse(message);
+      document.getElementById('status').innerText = 'Status: ' + data.action;
+      
+      switch(data.action) {
+        case 'start':
+          startMusic(data.visibility || 50);
+          break;
+        case 'stop':
+          stopMusic();
+          break;
+        case 'changeInstrument':
+          changeInstrument(data.value);
+          break;
+        case 'changeTempo':
+          changeTempo(data.value);
+          break;
+        case 'changeVisibility':
+          updateVisibility(data.value);
+          break;
+        case 'updateParameters':
+          if (data.visibility) updateVisibility(data.visibility);
+          if (data.tempo) changeTempo(data.tempo);
+          if (data.instrument) changeInstrument(data.instrument);
+          break;
+      }
+      
+      // 发送响应回Flutter
+      sendMessageToFlutter({
+        status: isPlaying ? 'playing' : 'stopped',
+        instrument: instrument,
+        tempo: tempo,
+        visibility: visibility
+      });
+    }
+    
+    // 向Flutter发送消息
+    function sendMessageToFlutter(data) {
+      if (window.FlutterChannel) {
+        window.FlutterChannel.postMessage(JSON.stringify(data));
+      }
+    }
+    
+    // 根据可见度创建音乐素材
+    function createMusicMaterial(visValue) {
+      let scale, chords, rhythm;
+      
+      // 根据可见度设置音乐素材
+      if (visValue < 30) {
+        // 低可见度 - 暗色、小调
+        scale = ['C3', 'D3', 'Eb3', 'F3', 'G3', 'Ab3', 'Bb3', 'C4'];
+        chords = [
+          ["C3", "Eb3", "G3"], 
+          ["F3", "Ab3", "C4"], 
+          ["G3", "Bb3", "D4"]
+        ];
+        rhythm = [1, 0, 0.5, 0, 1, 0, 0.5, 0];
+      } else if (visValue < 70) {
+        // 中等可见度 - 平衡、自然小调
+        scale = ['A3', 'B3', 'C4', 'D4', 'E4', 'F4', 'G4', 'A4'];
+        chords = [
+          ["A3", "C4", "E4"], 
+          ["D3", "F4", "A4"], 
+          ["E3", "G4", "B3"]
+        ];
+        rhythm = [1, 0.5, 0.5, 0, 1, 0.5, 0.5, 0];
+      } else {
+        // 高可见度 - 明亮、大调
+        scale = ['C4', 'D4', 'E4', 'F4', 'G4', 'A4', 'B4', 'C5'];
+        chords = [
+          ["C4", "E4", "G4"], 
+          ["F4", "A4", "C5"], 
+          ["G4", "B4", "D5"]
+        ];
+        rhythm = [1, 0.5, 0.5, 0.5, 1, 0.5, 0.5, 0.5];
+      }
+      
+      return { scale, chords, rhythm };
+    }
+    
+    // 创建旋律
+    function createMelody(scale, length) {
+      const melody = [];
+      for (let i = 0; i < length; i++) {
+        // 根据位置创建不同概率的音符选择
+        if (i % 4 === 0) {
+          // 主拍位置使用重要音符
+          melody.push(scale[Math.floor(Math.random() * 3) * 2]);
+        } else if (i % 2 === 0) {
+          // 次拍位置使用任意音符
+          melody.push(scale[Math.floor(Math.random() * scale.length)]);
+        } else {
+          // 弱拍位置有时使用休止符
+          if (Math.random() > 0.3) {
+            melody.push(scale[Math.floor(Math.random() * scale.length)]);
+          } else {
+            melody.push(null); // 休止符
+          }
+        }
+      }
+      return melody;
+    }
+    
+    // 开始播放音乐
+    function startMusic(vis) {
+      if (isPlaying) return;
+      
+      visibility = parseInt(vis || 50);
+      
+      // 初始化Tone.js
+      Tone.start().then(() => {
+        // 设置音效处理链
+        reverb = new Tone.Reverb(1.5).toDestination();
+        delay = new Tone.FeedbackDelay(0.25, 0.3).connect(reverb);
+        filter = new Tone.Filter(1000, "lowpass").connect(delay);
+        
+        // 创建合成器
+        if (instrument === 'synth') {
+          synth = new Tone.PolySynth(Tone.Synth).connect(filter);
+        } else if (instrument === 'am') {
+          synth = new Tone.PolySynth(Tone.AMSynth).connect(filter);
+        } else if (instrument === 'fm') {
+          synth = new Tone.PolySynth(Tone.FMSynth).connect(filter);
+        }
+        
+        // 根据可见度设置音乐参数
+        updateVisibility(visibility);
+        
+        // 创建音乐素材
+        const { scale, chords, rhythm } = createMusicMaterial(visibility);
+        
+        // 创建旋律
+        const melody = createMelody(scale, 16);
+        
+        // 创建循环模式
+        pattern = new Tone.Sequence((time, note) => {
+          if (note !== null) {
+            synth.triggerAttackRelease(note, '8n', time);
+          }
+        }, melody, '8n').start(0);
+        
+        // 设置速度
+        Tone.Transport.bpm.value = tempo;
+        
+        // 开始播放
+        Tone.Transport.start();
+        isPlaying = true;
+        
+        // 更新状态
+        sendMessageToFlutter({ status: 'playing' });
+      });
+    }
+    
+    // 停止音乐
+    function stopMusic() {
+      if (!isPlaying) return;
+      
+      // 停止并清理所有音频资源
+      if (pattern) {
+        pattern.stop();
+        pattern.dispose();
+        pattern = null;
+      }
+      
+      if (synth) {
+        synth.dispose();
+        synth = null;
+      }
+      
+      if (filter) {
+        filter.dispose();
+        filter = null;
+      }
+      
+      if (delay) {
+        delay.dispose();
+        delay = null;
+      }
+      
+      if (reverb) {
+        reverb.dispose();
+        reverb = null;
+      }
+      
+      Tone.Transport.stop();
+      isPlaying = false;
+      
+      // 更新状态
+      sendMessageToFlutter({ status: 'stopped' });
+    }
+    
+    // 更改乐器
+    function changeInstrument(newInstrument) {
+      instrument = newInstrument;
+      
+      if (isPlaying) {
+        // 如果已经在播放，需要重启音乐以应用新乐器
+        const wasPlaying = isPlaying;
+        const currentVisibility = visibility;
+        stopMusic();
+        
+        if (wasPlaying) {
+          startMusic(currentVisibility);
+        }
+      }
+    }
+    
+    // 更改速度
+    function changeTempo(newTempo) {
+      tempo = parseInt(newTempo);
+      
+      if (isPlaying) {
+        Tone.Transport.bpm.value = tempo;
+      }
+    }
+    
+    // 更新可见度参数
+    function updateVisibility(vis) {
+      visibility = parseInt(vis);
+      
+      if (!isPlaying || !synth) return;
+      
+      // 1. 调整滤波器频率 - 可见度高时声音更明亮
+      if (filter) {
+        const cutoff = 200 + (visibility * 50); // 200Hz到5200Hz
+        filter.frequency.rampTo(cutoff, 0.5);
+      }
+      
+      // 2. 调整混响湿度 - 可见度低时混响更多
+      if (reverb) {
+        const wetLevel = 0.8 - (visibility / 100) * 0.6; // 0.8到0.2
+        reverb.wet.value = wetLevel;
+      }
+      
+      // 3. 调整延迟反馈 - 可见度低时延迟更明显
+      if (delay) {
+        const feedbackLevel = 0.5 - (visibility / 100) * 0.3; // 0.5到0.2
+        delay.feedback.value = feedbackLevel;
+      }
+      
+      // 4. 重新创建音乐材料和旋律
+      if (pattern && isPlaying) {
+        const { scale } = createMusicMaterial(visibility);
+        const newMelody = createMelody(scale, 16);
+        pattern.events = newMelody;
+      }
+    }
+  </script>
+</body>
+</html>

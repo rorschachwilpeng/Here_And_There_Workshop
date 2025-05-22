@@ -1,15 +1,14 @@
+// lib/main.dart
+
 import 'dart:async';
 import 'dart:convert';
-import 'dart:developer';
-
-import 'package:audioplayers/audioplayers.dart';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:geo_music_personality/models/user_path.dart';
-import 'package:geo_music_personality/models/personality_calculator.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 void main() {
   runApp(const MyApp());
@@ -39,41 +38,35 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // Current position information
+  // Current Position
   Position? _currentPosition;
-  
-  // Music player
-  final AudioPlayer _audioPlayer = AudioPlayer();
-  
-  // Store all area data
-  final List<Map<String, dynamic>> _areas = [];
-  
-  // Current entered area
   Map<String, dynamic>? _currentArea;
-  
-  // Position listener subscription
   StreamSubscription<Position>? _positionStreamSubscription;
-  
-  // Program status
+  final List<Map<String, dynamic>> _areas = [];
   bool _isLoading = true;
-  bool _isPlaying = false;
   String _statusMessage = "Initializing...";
+  
+  // WebView related variables
+  WebViewController? _webViewController;
+  bool _isWebViewReady = false;
+  
+  // Music control related variables
+  bool _isMusicPlaying = false;
+  String _currentInstrument = 'synth';
+  double _tempo = 120.0;
+  double _visibility = 50.0;
+  bool _showMusicControls = false;
+  
+  // Available instruments list
+  final List<Map<String, dynamic>> _instruments = [
+    {'value': 'synth', 'name': 'Basic Synth'},
+    {'value': 'am', 'name': 'AM Synth'},
+    {'value': 'fm', 'name': 'FM Synth'},
+  ];
 
-  // Track user path
-  UserPath _currentPath = UserPath();
-
-  // Store personality results based on paths
-  Map<String, dynamic>? _pathResults;
-
-  // Flag to show path results
-  bool _showingPathResults = false;
-
-  // Store previously visited areas for path tracking
-  Set<String> _visitedAreas = {};
-
-  // Personality calculator using fixed-size array approach
-  PersonalityCalculator _personalityCalculator = PersonalityCalculator(maxEntries: 5);
-  bool _resultShown = false;
+  // New: Track visited areas
+  final List<Map<String, dynamic>> _visitedAreas = [];
+  final int _requiredVisits = 5; // Number of areas to visit
 
   @override
   void initState() {
@@ -83,13 +76,11 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
-    // Release resources
     _positionStreamSubscription?.cancel();
-    _audioPlayer.dispose();
     super.dispose();
   }
 
-  // Initialize the application
+  // Initialize the app
   Future<void> _initApp() async {
     setState(() {
       _statusMessage = "Loading data...";
@@ -98,13 +89,137 @@ class _HomePageState extends State<HomePage> {
     // 1. Load GeoJSON data
     await _loadGeoJsonData();
     
-    // 2. Request location permission and start tracking location
+    // 2. Initialize WebView
+    await _initWebView();
+    
+    // 3. Request location permission and start tracking location
     await _requestLocationPermission();
     
     setState(() {
       _isLoading = false;
-      _statusMessage = "Application ready";
+      _statusMessage = "Application is ready";
     });
+  }
+
+  // Initialize WebView
+  Future<void> _initWebView() async {
+    try {
+      // Copy HTML file to local for WebView loading
+      final htmlFile = await _copyAssetToLocal('assets/web/tone_engine.html');
+      
+      final controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setBackgroundColor(const Color(0x00000000)) // Transparent background
+        ..addJavaScriptChannel(
+          'FlutterChannel',
+          onMessageReceived: _handleMessageFromJS,
+        )
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onPageFinished: (String url) {
+              setState(() {
+                _isWebViewReady = true;
+                _statusMessage = "Music engine loaded";
+              });
+            },
+            onWebResourceError: (WebResourceError error) {
+              setState(() {
+                _statusMessage = "WebView error: ${error.description}";
+              });
+            },
+          ),
+        )
+        ..loadFile(htmlFile.path);
+        
+      setState(() {
+        _webViewController = controller;
+      });
+    } catch (e) {
+      setState(() {
+        _statusMessage = "WebView initialization error: $e";
+      });
+    }
+  }
+  
+  // Copy resource files to local
+  Future<File> _copyAssetToLocal(String assetPath) async {
+    final directory = await getTemporaryDirectory();
+    final path = '${directory.path}/tone_engine.html';
+    final file = File(path);
+    
+    if (!await file.exists()) {
+      final data = await rootBundle.load(assetPath);
+      final bytes = data.buffer.asUint8List();
+      await file.writeAsBytes(bytes);
+    }
+    
+    return file;
+  }
+  
+  // Handle messages from JavaScript
+  void _handleMessageFromJS(JavaScriptMessage message) {
+    try {
+      final data = jsonDecode(message.message);
+      setState(() {
+        // Update UI status based on message
+        if (data.containsKey('status')) {
+          if (data['status'] == 'playing') {
+            _isMusicPlaying = true;
+          } else if (data['status'] == 'stopped') {
+            _isMusicPlaying = false;
+          }
+        }
+        
+        // Update other states
+        if (data.containsKey('instrument')) {
+          _currentInstrument = data['instrument'];
+        }
+        if (data.containsKey('tempo')) {
+          _tempo = double.tryParse(data['tempo'].toString()) ?? _tempo;
+        }
+        if (data.containsKey('visibility')) {
+          _visibility = double.tryParse(data['visibility'].toString()) ?? _visibility;
+        }
+      });
+    } catch (e) {
+      print("Handle JavaScript message error: $e");
+    }
+  }
+  
+  // Send commands to JavaScript
+  void _sendCommandToJs(String action, {Map<String, dynamic>? extraData}) {
+    if (_webViewController == null || !_isWebViewReady) {
+      print("Cannot send command: WebView not ready");
+      return;
+    }
+    
+    try {
+      final Map<String, dynamic> data = {'action': action};
+      if (extraData != null) {
+        data.addAll(extraData);
+      }
+      
+      final jsonMessage = jsonEncode(data);
+      print("Sending command to JS: $jsonMessage");
+      
+      // Add error handling
+      _webViewController!.runJavaScript(
+        "try { if(typeof handleMessageFromFlutter === 'function') { "
+        "handleMessageFromFlutter('$jsonMessage'); } else { "
+        "console.error('Function not found'); document.getElementById('status').innerText = 'Error: Function not found'; }"
+        "} catch(e) { console.error(e); document.getElementById('status').innerText = 'Error: ' + e; }"
+      ).catchError((error) {
+        print("JavaScript execution error: $error");
+        setState(() {
+          _statusMessage = "JavaScript execution error: $error";
+        });
+      });
+    } catch (e) {
+      print("Send command error: $e");
+      setState(() {
+        _statusMessage = "Send command error: $e";
+      });
+    }
   }
 
   // Load GeoJSON data
@@ -114,17 +229,17 @@ class _HomePageState extends State<HomePage> {
       final String geoJsonString = await rootBundle.loadString('assets/test.geojson');
       final Map<String, dynamic> geoJsonMap = json.decode(geoJsonString);
       
-      // 解析GeoJSON features
+      // Parse GeoJSON features
       final features = geoJsonMap['features'] as List;
       
       for (var feature in features) {
         if (feature['geometry']['type'] == 'Polygon') {
-          // Extract area attributes
+          // Extract area properties
           final properties = feature['properties'];
           final name = properties['name'];
-          final musicUrl = properties['music_url'];
+          final musicUrl = properties['music_url']; // Keep but may not be used
           final personalityResult = properties['personality_result'];
-          final visibility = properties['visibility'] as int? ?? 50; // Default to 50 if not specified
+          final visibility = properties['visibility'] ?? 50; // Ensure reading visibility attribute
           
           // Extract area boundary coordinates
           final coordinates = feature['geometry']['coordinates'][0] as List;
@@ -148,15 +263,31 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _statusMessage = "Loaded ${_areas.length} areas";
       });
+      
+      _debugGeoJsonData();
     } catch (e) {
       setState(() {
         _statusMessage = "Failed to load GeoJSON data: $e";
       });
-      log("Failed to load GeoJSON data: $e");
+      print("Failed to load GeoJSON data: $e");
     }
   }
 
-  // Request location permission
+  void _debugGeoJsonData() {
+    print("====== GeoJSON data debugging ======");
+    print("Total areas: ${_areas.length}");
+    
+    for (int i = 0; i < _areas.length; i++) {
+      final area = _areas[i];
+      print("Area ${i+1}: ${area['name']}");
+      print("  Visibility: ${area['visibility']}");
+      print("  Boundary points: ${(area['polygon'] as List).length}");
+    }
+    
+    print("====== Area list end ======");
+  }
+
+  // Location permission and tracking -基本保持原有实现
   Future<void> _requestLocationPermission() async {
     final status = await Permission.location.request();
     
@@ -169,25 +300,21 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Start location tracking
   void _startLocationTracking() {
-    // Define location settings
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 10, // Update every 10 meters
+      distanceFilter: 10,
     );
 
-    // Listen for location changes
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: locationSettings
     ).listen(_handlePositionUpdate);
     
     setState(() {
-      _statusMessage = "Started tracking location...";
+      _statusMessage = "Start tracking location...";
     });
   }
 
-  // Handle position updates
   void _handlePositionUpdate(Position position) {
     setState(() {
       _currentPosition = position;
@@ -198,17 +325,20 @@ class _HomePageState extends State<HomePage> {
     _checkIfInAnyArea(position);
   }
 
-  // Check if in any defined area
+  // Check if in any defined area - keep original algorithm logic
   void _checkIfInAnyArea(Position position) {
     final currentLat = position.latitude;
     final currentLng = position.longitude;
     
+    print("Check if position ($currentLat, $currentLng) is in any area");
+    
     for (var area in _areas) {
       final polygonCoords = area['polygon'] as List<List<double>>;
+      bool isInside = _isPointInPolygon(currentLng, currentLat, polygonCoords);
+      print("Area: ${area['name']} - Point inside: $isInside");
       
-      // Use custom method to check if point is in polygon
-      if (_isPointInPolygon(currentLng, currentLat, polygonCoords)) {
-        // If in area and not current area, trigger new area action
+      if (isInside) {
+        // If inside and not current area, trigger new area action
         if (_currentArea == null || _currentArea!['name'] != area['name']) {
           _enterNewArea(area);
         }
@@ -222,9 +352,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
   
-  // Custom method: Check if point is in polygon (Ray Casting Algorithm)
+  // Custom method: Determine if a point is inside a polygon (ray casting method)
   bool _isPointInPolygon(double x, double y, List<List<double>> polygon) {
-    // Implement Ray Casting Algorithm to check if point is in polygon
     bool isInside = false;
     int i = 0, j = polygon.length - 1;
     
@@ -240,181 +369,196 @@ class _HomePageState extends State<HomePage> {
     return isInside;
   }
 
-  // Handle entering a new area
+  // Enter new area
   void _enterNewArea(Map<String, dynamic> area) {
+    print("Attempting to enter area: ${area['name']}, current visited areas count: ${_visitedAreas.length}");
+    print("Current visited areas: ${_visitedAreas.map((a) => a['name']).join(', ')}");
+    
+    // Check if already visited this area
+    bool alreadyVisited = _visitedAreas.any((visitedArea) => 
+      visitedArea['name'] == area['name']);
+    
+    print("Already visited this area: $alreadyVisited");
+    
     setState(() {
       _currentArea = area;
-      _statusMessage = "You have entered the area: ${area['name']}";
+      _statusMessage = "You have entered area: ${area['name']}";
+      
+      // If new area, add to visited list
+      if (!alreadyVisited) {
+        _visitedAreas.add(Map<String, dynamic>.from(area));
+        // Sort visited areas to ensure consistent order
+        _visitedAreas.sort((a, b) => a['name'].compareTo(b['name']));
+        print("After adding, visited areas count: ${_visitedAreas.length}");
+        print("Visited areas list: ${_visitedAreas.map((a) => a['name']).join(', ')}");
+      }
     });
     
-    // Get visibility value from the area
+    // Get area visibility value
     final visibility = (area['visibility'] as int?) ?? 50;
     
-    // Add to the calculator
-    _personalityCalculator.addVisibilityValue(visibility);
+    // Update visibility slider
+    setState(() {
+      _visibility = visibility.toDouble();
+    });
     
-    // Play the music of the area
-    _playAreaMusic(area['music_url']);
+    // Ensure music playback - add debug output
+    print("Attempting to play music, visibility: $visibility");
+    if (!_isMusicPlaying) {
+      print("Start playing music");
+      _startMusic();
+    } else {
+      print("Update music parameters");
+      _sendCommandToJs('changeVisibility', extraData: {'value': visibility.toString()});
+    }
     
-    // Only show result when array is full and result hasn't been shown yet
-    if (_personalityCalculator.isFull() && !_resultShown) {
+    // If visited areas count meets requirement, show final result
+    if (_visitedAreas.length >= _requiredVisits && !alreadyVisited) {
       _showFinalPersonalityResult();
-      _resultShown = true;
+    } else {
+      // Show area info without personality test result
+      _showAreaInfo(area['name']);
     }
   }
 
-  // Handle leaving an area
+  // New: Show area info (without personality test result)
+  void _showAreaInfo(String areaName) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Entered area: $areaName, Visited ${_visitedAreas.length}/${_requiredVisits} areas'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+  
+  // New: Show final personality test result
+  void _showFinalPersonalityResult() {
+    // 计算平均可见度
+    double avgVisibility = _visitedAreas.fold(0.0, (sum, area) => 
+        sum + ((area['visibility'] as int?) ?? 50)) / _visitedAreas.length;
+    
+    // 选择结果文本
+    String resultText;
+    if (avgVisibility < 30) {
+      resultText = "You are a very mysterious person, inclined to deep thinking";
+    } else if (avgVisibility < 70) {
+      resultText = "You are a balanced person, able to appreciate life's details and see the path ahead.";
+    } else {
+      resultText = "You are an open and optimistic person, who loves to share and explore, always finding beauty in life.";
+    }
+    
+    // 使用简洁的Material 3风格
+    showDialog(
+      context: context,
+      builder: (context) => Dialog.fullscreen(
+        child: Scaffold(
+          appBar: AppBar(
+            title: Text('Personality Analysis Result'),
+            leading: IconButton(
+              icon: Icon(Icons.close),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          body: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.psychology,
+                  size: 64,
+                  color: Theme.of(context).primaryColor,
+                ),
+                SizedBox(height: 16),
+                Text(
+                  'Average Visibility: ${avgVisibility.toStringAsFixed(1)}',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 24),
+                Text(
+                  resultText,
+                  style: TextStyle(fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+                Spacer(),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text('I understand'),
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: Size(double.infinity, 48),
+                  ),
+                ),
+                SizedBox(height: 16),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  
+  // Leave area processing - modified to stop music
   void _leaveArea() {
     setState(() {
       _currentArea = null;
       _statusMessage = "You have left the area";
-      _isPlaying = false;
     });
     
-    // Stop music playback
-    _audioPlayer.stop();
+    // Stop music
+    _stopMusic();
   }
 
-  // Play area music
-  Future<void> _playAreaMusic(String musicUrl) async {
-    try {
-      await _audioPlayer.stop();
-      await _audioPlayer.play(UrlSource(musicUrl));
+  // New: Start music method
+  void _startMusic() {
+    if (!_isWebViewReady) {
+      print("WebView not ready, cannot play music");
       setState(() {
-        _isPlaying = true;
+        _statusMessage = "WebView not ready, trying to reload page...";
       });
-    } catch (e) {
-      log("Play music failed: $e");
-      setState(() {
-        _statusMessage = "Play music failed: $e";
-      });
+      // Try to reload WebView
+      _initWebView();
+      return;
     }
-  }
-
-  // Show personality test result
-  void _showPersonalityResult(String areaName, String personalityResult) {
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (BuildContext context) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                areaName,
-                style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                personalityResult,
-                style: const TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                },
-                child: const Text('Got it!'),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  // Show the final personality result dialog
-  void _showFinalPersonalityResult() {
-    String result = _personalityCalculator.determinePersonalityResult();
-    double average = _personalityCalculator.calculateAverageVisibility();
     
-    showDialog(
-      context: context,
-      barrierDismissible: false, // User must respond to dialog
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Your Personality Analysis Results'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Based on your visits to ${_personalityCalculator.visibilityValues.length} different areas:',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              SizedBox(height: 16),
-              Text('Average Visibility Score: ${average.toStringAsFixed(1)}'),
-              SizedBox(height: 4),
-              // Show all collected values
-              Wrap(
-                spacing: 6,
-                children: _personalityCalculator.visibilityValues
-                    .map((v) => Chip(
-                          label: Text('$v'),
-                          backgroundColor: _getColorForVisibility(v),
-                          labelStyle: TextStyle(fontSize: 12),
-                          visualDensity: VisualDensity.compact,
-                        ))
-                    .toList(),
-              ),
-              SizedBox(height: 20),
-              Container(
-                padding: EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  result,
-                  style: TextStyle(fontSize: 16),
-                ),
-              ),
-            ],
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _resetCalculator();
-              },
-              child: Text('Start New Analysis'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: Text('Close'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  // Reset the calculator
-  void _resetCalculator() {
+    print("Sending start playing music command, parameters: visibility=${_visibility.toInt()}, tempo=${_tempo.toInt()}, instrument=$_currentInstrument");
+    _sendCommandToJs('start', extraData: {
+      'visibility': _visibility.toInt().toString(),
+      'tempo': _tempo.toInt().toString(),
+      'instrument': _currentInstrument,
+    });
+    
     setState(() {
-      _personalityCalculator.reset();
-      _resultShown = false;
-      _statusMessage = "Starting a new personality analysis";
+      _isMusicPlaying = true;
+      _statusMessage = "Current Instrument: (${_currentInstrument}, ${_tempo.toInt()} BPM)";
+    });
+  }
+  
+  // New: Stop music method
+  void _stopMusic() {
+    if (!_isWebViewReady) return;
+    
+    _sendCommandToJs('stop');
+    
+    setState(() {
+      _isMusicPlaying = false;
+    });
+  }
+  
+  // Update music parameters
+  void _updateMusicParameters() {
+    if (!_isWebViewReady || !_isMusicPlaying) return;
+    
+    _sendCommandToJs('updateParameters', extraData: {
+      'visibility': _visibility.toInt().toString(),
+      'tempo': _tempo.toInt().toString(),
+      'instrument': _currentInstrument,
     });
   }
 
-  // Helper method to generate colors based on visibility value
-  Color _getColorForVisibility(int visibility) {
-    if (visibility < 20) return Colors.indigo[100]!;
-    if (visibility < 40) return Colors.blue[100]!;
-    if (visibility < 60) return Colors.green[100]!;
-    if (visibility < 80) return Colors.amber[100]!;
-    return Colors.orange[100]!;
-  }
-
-  // Simulate location for testing
+  // Modify to simulate location
   void _simulateLocation(double lat, double lng) {
     final simulatedPosition = Position(
       latitude: lat,
@@ -431,418 +575,450 @@ class _HomePageState extends State<HomePage> {
     
     _handlePositionUpdate(simulatedPosition);
   }
-
-  void _completePath() {
-    if (_currentPath.entries.isNotEmpty) {
-      final results = _currentPath.completePath();
-      setState(() {
-        _pathResults = results;
-        _showingPathResults = true;
-      });
-      _showPathResults(results);
-    }
-  }
-
-  void _showPathResults(Map<String, dynamic> results) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Your Path Results'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('Total Visibility Score: ${results['score']}'),
-                SizedBox(height: 10),
-                Text('Your Journey:'),
-                ...List.generate(
-                  results['path'].length,
-                  (index) => Padding(
-                    padding: EdgeInsets.only(left: 16.0, top: 4.0),
-                    child: Text('${index + 1}. ${results['path'][index]}'),
-                  ),
-                ),
-                SizedBox(height: 20),
-                Text(
-                  results['result'],
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _resetPath();
-              },
-              child: Text('Start New Path'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: Text('Close'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _resetPath() {
+  
+  // Toggle music controls panel display status
+  void _toggleMusicControls() {
     setState(() {
-      _currentPath.reset();
-      _visitedAreas.clear();
-      _pathResults = null;
-      _showingPathResults = false;
-      _statusMessage = "Starting a new journey";
+      _showMusicControls = !_showMusicControls;
     });
   }
 
-  void _simulatePath(List<String> areaNames) {
-    // Reset current path
-    _resetPath();
+  // Add to class as a new method
+  void _testAddAllAreas() {
+    print("Total areas: ${_areas.length}");
     
-    // Find the areas by name
-    final areasToVisit = _areas.where((area) => 
-      areaNames.contains(area['name'])).toList();
+    // Prepare the list of areas to add
+    List<Map<String, dynamic>> areasToAdd = [];
     
-    if (areasToVisit.isEmpty) {
-      setState(() {
-        _statusMessage = "Could not find areas for simulation";
-      });
-      return;
+    // Copy existing areas
+    for (var area in _areas) {
+      areasToAdd.add(Map<String, dynamic>.from(area));
     }
     
-    // Add each area to the path
-    for (var area in areasToVisit) {
-      final areaName = area['name'] as String;
-      final visibility = (area['visibility'] as int?) ?? 50;
+    // If the number of areas is less than the required number, add additional areas
+    if (areasToAdd.length < _requiredVisits) {
+      for (int i = areasToAdd.length; i < _requiredVisits; i++) {
+        // Ensure necessary fields are added
+        areasToAdd.add({
+          'name': 'Area ${i+1}',
+          'personality_result': 'This is the personality result for the automatically added area ${i+1}',
+          'visibility': 40 + (i * 10),
+          'polygon': [[121.0, 31.0], [121.1, 31.0], [121.1, 31.1], [121.0, 31.1], [121.0, 31.0]], // Add necessary polygon field
+          'music_url': '', // Add possible other fields
+        });
+      }
+    }
+    
+    print("Number of areas to add: ${areasToAdd.length}");
+    
+    // Clear and add all areas at once (avoid multiple setStates)
+    setState(() {
+      _visitedAreas.clear();
       
-      _currentPath.addArea(areaName, visibility);
-      _visitedAreas.add(areaName);
+      for (int i = 0; i < _requiredVisits && i < areasToAdd.length; i++) {
+        _visitedAreas.add(Map<String, dynamic>.from(areasToAdd[i]));
+        print("Added area ${areasToAdd[i]['name']}");
+      }
       
-      // Brief delay to simulate movement between areas
-      Future.delayed(
-        Duration(milliseconds: 500 * (areasToVisit.indexOf(area) + 1)), 
-        () {
-          setState(() {
-            _statusMessage = "Visited ${areaName} (Visibility: $visibility)";
-          });
-        }
+      print("After adding, visited areas count: ${_visitedAreas.length}");
+      print("Visited areas: ${_visitedAreas.map((a) => a['name']).join(', ')}");
+    });
+    
+    // If enough areas are successfully added, show the result
+    if (_visitedAreas.length >= _requiredVisits) {
+      _showFinalPersonalityResult();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to add enough areas: need ${_requiredVisits}, but only added ${_visitedAreas.length}'),
+          duration: Duration(seconds: 3),
+        ),
       );
     }
+  }
+
+  // Clear visited areas method
+  void _clearVisitedAreas() {
+    setState(() {
+      _visitedAreas.clear();
+      
+      // Update status message
+      _statusMessage = "All visited areas have been cleared";
+    });
     
-    // Show results after a delay
-    Future.delayed(
-      Duration(milliseconds: 500 * (areasToVisit.length + 1)),
-      () => _completePath()
+    // Show prompt message
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('All visited areas have been cleared'),
+        duration: Duration(seconds: 2),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            // Do not implement undo functionality, if needed, save a backup first
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Cannot undo'),
+                duration: Duration(seconds: 1),
+              ),
+            );
+          },
+        ),
+      ),
     );
-  }
-
-  // Simulate visiting multiple areas in sequence to fill the calculator
-  void _simulateMultipleVisits(List<String> areaNames) {
-    // Reset calculator first
-    _resetCalculator();
-    
-    // Find areas that match the provided names
-    final areasToVisit = _areas.where((area) => 
-      areaNames.contains(area['name'])).toList();
-    
-    if (areasToVisit.isEmpty) {
-      setState(() {
-        _statusMessage = "Could not find areas for simulation";
-      });
-      return;
-    }
-    
-    // Simulate visiting each area with a delay
-    for (int i = 0; i < areasToVisit.length; i++) {
-      final area = areasToVisit[i];
-      
-      // Add delay to create a sequence of visits
-      Future.delayed(
-        Duration(milliseconds: 1000 * (i + 1)), 
-        () => _simulateAreaVisit(area),
-      );
-    }
-  }
-
-  // Simulate visiting a single area by using its center coordinates
-  void _simulateAreaVisit(Map<String, dynamic> area) {
-    // Get polygon coordinates
-    final polygonCoords = area['polygon'] as List<List<double>>;
-    
-    // Calculate polygon center (simple average)
-    double sumLat = 0;
-    double sumLng = 0;
-    
-    for (var coord in polygonCoords) {
-      sumLng += coord[0];
-      sumLat += coord[1];
-    }
-    
-    double centerLat = sumLat / polygonCoords.length;
-    double centerLng = sumLng / polygonCoords.length;
-    
-    // Simulate location at center of the area
-    _simulateLocation(centerLat, centerLng);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Geo Music Personality Test'),
+        title: const Text('Geographic Music Personality Test'),
+        actions: [
+          // Add clear button
+          IconButton(
+            icon: Icon(Icons.delete_sweep),
+            onPressed: _clearVisitedAreas,
+            tooltip: 'Clear visited areas',
+          ),
+          // Existing music control button
+          IconButton(
+            icon: Icon(_showMusicControls ? Icons.music_off : Icons.music_note),
+            onPressed: _toggleMusicControls,
+            tooltip: 'Music control',
+          ),
+          // Refresh WebView button
+          IconButton(
+            icon: Icon(Icons.refresh),
+            onPressed: () {
+              _initWebView();
+            },
+            tooltip: 'Reload music engine',
+          ),
+          ElevatedButton(
+            onPressed: _testAddAllAreas,
+            child: const Text('Test adding all areas'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.purple,
+            ),
+          ),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(
-                    Icons.location_on,
-                    size: 80,
-                    color: Colors.blue,
+          : Stack(
+              children: [
+                // Display WebView for debugging (can be hidden in release version)
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  width: 300, // Visible for debugging
+                  height: 100, // Visible for debugging
+                  child: Opacity(
+                    opacity: 0.3, // Transparent for debugging
+                    child: _webViewController != null
+                        ? WebViewWidget(controller: _webViewController!)
+                        : Container(color: Colors.red, child: Text("No WebView")),
                   ),
-                  const SizedBox(height: 20),
-                  Text(
-                    _statusMessage,
-                    style: const TextStyle(fontSize: 18),
-                    textAlign: TextAlign.center,
-                  ),
-                  if (_currentPosition != null) ...[
-                    const SizedBox(height: 20),
-                    Text(
-                      'Latitude: ${_currentPosition!.latitude.toStringAsFixed(6)}\nLongitude: ${_currentPosition!.longitude.toStringAsFixed(6)}',
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                  if (_currentArea != null) ...[
-                    const SizedBox(height: 30),
-                    Container(
-                      padding: const EdgeInsets.all(15),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.shade100,
-                        borderRadius: BorderRadius.circular(10),
+                ),
+                
+                // Main content
+                SingleChildScrollView(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(height: 100), // Space for debugging WebView
+                      const Icon(
+                        Icons.location_on,
+                        size: 80,
+                        color: Colors.blue,
                       ),
-                      child: Column(
-                        children: [
-                          Text(
-                            'Current Area: ${_currentArea!['name']}',
-                            style: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          if (_isPlaying)
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: const [
-                                Icon(Icons.music_note),
-                                SizedBox(width: 5),
-                                Text('Playing music...'),
-                              ],
-                            ),
-                          const SizedBox(height: 10),
-                          ElevatedButton(
-                            onPressed: () {
-                              _showPersonalityResult(
-                                _currentArea!['name'],
-                                _currentArea!['personality_result'],
-                              );
-                            },
-                            child: const Text('View personality analysis'),
-                          ),
-                        ],
+                      const SizedBox(height: 20),
+                      Text(
+                        _statusMessage,
+                        style: const TextStyle(fontSize: 18),
+                        textAlign: TextAlign.center,
                       ),
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                  // Personality analysis progress card
-                  Card(
-                    margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Personality Analysis Progress',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      if (_currentPosition != null) ...[
+                        const SizedBox(height: 20),
+                        Text(
+                          'Latitude: ${_currentPosition!.latitude.toStringAsFixed(6)}\nLongitude: ${_currentPosition!.longitude.toStringAsFixed(6)}',
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                      
+                      // Visited areas display
+                      if (_visitedAreas.isNotEmpty) ...[
+                        const SizedBox(height: 20),
+                        Container(
+                          padding: const EdgeInsets.all(15),
+                          margin: const EdgeInsets.symmetric(horizontal: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.shade100,
+                            borderRadius: BorderRadius.circular(10),
                           ),
-                          SizedBox(height: 8),
-                          Text(
-                            'Collecting ${_personalityCalculator.maxEntries} area visits to analyze your personality...',
-                            style: TextStyle(fontSize: 14),
-                          ),
-                          SizedBox(height: 8),
-                          // Add more guidance text if needed
-                          if (!_personalityCalculator.isFull()) ...[
-                            SizedBox(height: 8),
-                            Text(
-                              'Visit ${_personalityCalculator.maxEntries - _personalityCalculator.visibilityValues.length} more areas to see your result',
-                              style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey[600]),
-                            ),
-                          ],
-                          // Progress bar showing completion status
-                          LinearProgressIndicator(
-                            value: _personalityCalculator.getCompletionPercentage(),
-                            backgroundColor: Colors.grey[200],
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                          ),
-                          SizedBox(height: 4),
-                          Text(
-                            'Progress: ${_personalityCalculator.getProgressText()}',
-                            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                          ),
-                          // Display collected visibility values if any
-                          if (_personalityCalculator.visibilityValues.isNotEmpty) ...[
-                            SizedBox(height: 12),
-                            Text('Recent visibility values:'),
-                            SizedBox(height: 4),
-                            Wrap(
-                              spacing: 8,
-                              children: _personalityCalculator.visibilityValues
-                                  .map((value) => Chip(
-                                        label: Text('$value'),
-                                        backgroundColor: _getColorForVisibility(value),
-                                      ))
-                                  .toList(),
-                            ),
-                          ],
-                          SizedBox(height: 12),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                          child: Column(
                             children: [
-                              OutlinedButton(
-                                onPressed: _resetCalculator,
-                                child: Text('Reset Analysis'),
+                              Text(
+                                'Visited areas: ${_visitedAreas.length}/${_requiredVisits}',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  // Path tracking information
-                  Card(
-                    margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Your Current Path',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                          ),
-                          SizedBox(height: 8),
-                          if (_currentPath.entries.isEmpty)
-                            Text('No areas visited yet. Start exploring!'),
-                          if (_currentPath.entries.isNotEmpty) ...[
-                            Text('Areas visited: ${_currentPath.entries.length}'),
-                            SizedBox(height: 4),
-                            Text('Total visibility score: ${_currentPath.calculateVisibilityScore()}'),
-                            SizedBox(height: 12),
-                            Wrap(
-                              spacing: 8,
-                              children: _currentPath.getAreaNames()
-                                  .map((name) => Chip(label: Text(name)))
-                                  .toList(),
-                            ),
-                            SizedBox(height: 12),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
+                              const SizedBox(height: 10),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                alignment: WrapAlignment.center,
+                                children: _visitedAreas.map((area) => Chip(
+                                  label: Text(area['name']),
+                                  avatar: CircleAvatar(
+                                    child: Text('${area['visibility']}'),
+                                    backgroundColor: Colors.blue,
+                                  ),
+                                )).toList(),
+                              ),
+                              if (_visitedAreas.length >= _requiredVisits) ...[
+                                const SizedBox(height: 10),
                                 ElevatedButton(
-                                  onPressed: _completePath,
-                                  child: Text('Complete Path'),
+                                  onPressed: _showFinalPersonalityResult,
+                                  child: const Text('View complete personality analysis'),
                                 ),
-                                OutlinedButton(
-                                  onPressed: _resetPath,
-                                  child: Text('Reset Path'),
+                              ] else ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  'Need to visit ${_requiredVisits - _visitedAreas.length} more areas to view complete personality analysis',
+                                  style: TextStyle(color: Colors.grey),
                                 ),
                               ],
+                            ],
+                          ),
+                        ),
+                      ],
+                      
+                      if (_currentArea != null) ...[
+                        const SizedBox(height: 20),
+                        Container(
+                          padding: const EdgeInsets.all(15),
+                          margin: const EdgeInsets.symmetric(horizontal: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Column(
+                            children: [
+                              Text(
+                                'Current area: ${_currentArea!['name']}',
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.visibility),
+                                  const SizedBox(width: 5),
+                                  Text('Visibility: ${_currentArea!['visibility']}'),
+                                ],
+                              ),
+                              if (_isMusicPlaying) ...[
+                                const SizedBox(height: 10),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: const [
+                                    Icon(Icons.music_note, color: Colors.green),
+                                    SizedBox(width: 5),
+                                    Text('Music is playing', style: TextStyle(color: Colors.green)),
+                                  ],
+                                ),
+                              ] else ...[
+                                const SizedBox(height: 10),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: const [
+                                    Icon(Icons.music_off, color: Colors.red),
+                                    SizedBox(width: 5),
+                                    Text('Music is not playing', style: TextStyle(color: Colors.red)),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                ElevatedButton(
+                                  onPressed: _startMusic,
+                                  child: const Text('Manually start music'),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                      
+                      // Music control panel
+                      if (_showMusicControls) ...[
+                        const SizedBox(height: 30),
+                        Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 16),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'Music control',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  ElevatedButton(
+                                    onPressed: () {
+                                      if (_isMusicPlaying) {
+                                        _stopMusic();
+                                      } else {
+                                        _startMusic();
+                                      }
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: _isMusicPlaying
+                                          ? Colors.red
+                                          : Colors.green,
+                                    ),
+                                    child: Text(_isMusicPlaying ? 'Stop' : 'Play'),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+                              
+                              // Instrument selection
+                              Text('Instrument:'),
+                              const SizedBox(height: 8),
+                              DropdownButton<String>(
+                                value: _currentInstrument,
+                                isExpanded: true,
+                                items: _instruments.map((instrument) {
+                                  return DropdownMenuItem<String>(
+                                    value: instrument['value'] as String,
+                                    child: Text(instrument['name'] as String),
+                                  );
+                                }).toList(),
+                                onChanged: (value) {
+                                  if (value != null) {
+                                    setState(() {
+                                      _currentInstrument = value;
+                                    });
+                                    _sendCommandToJs('changeInstrument', extraData: {'value': value});
+                                  }
+                                },
+                              ),
+                              
+                              const SizedBox(height: 16),
+                              
+                              // Speed slider
+                              Text('Speed: ${_tempo.toInt()} BPM'),
+                              Slider(
+                                value: _tempo,
+                                min: 60,
+                                max: 200,
+                                divisions: 140,
+                                label: _tempo.toInt().toString(),
+                                onChanged: (value) {
+                                  setState(() {
+                                    _tempo = value;
+                                  });
+                                  _sendCommandToJs('changeTempo', extraData: {'value': value.toInt().toString()});
+                                },
+                              ),
+                              
+                              const SizedBox(height: 16),
+                              
+                              // Visibility slider
+                              Text('Visibility: ${_visibility.toInt()}%'),
+                              Slider(
+                                value: _visibility,
+                                min: 0,
+                                max: 100,
+                                divisions: 100,
+                                label: _visibility.toInt().toString(),
+                                onChanged: (value) {
+                                  setState(() {
+                                    _visibility = value;
+                                  });
+                                  _sendCommandToJs('changeVisibility', extraData: {'value': value.toInt().toString()});
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      
+                      const SizedBox(height: 30),
+                      // Test button
+                      Text('Test button (simulate location)',
+                          style: TextStyle(color: Colors.grey)),
+                      Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            ElevatedButton(
+                              onPressed: () {
+                                _simulateLocation(31.25, 121.45);
+                              },
+                              child: const Text('Area 1 (25%)'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                _simulateLocation(31.35, 121.55);
+                              },
+                              child: const Text('Area 2 (50%)'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                _simulateLocation(31.45, 121.65);
+                              },
+                              child: const Text('Area 3 (75%)'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                _simulateLocation(31.45, 121.55);
+                              },
+                              child: const Text('Area 4 (90%)'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                _simulateLocation(31.55, 121.75);
+                              },
+                              child: const Text('Area 5 (40%)'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                _simulateLocation(30.0, 120.0);
+                              },
+                              child: const Text('Leave area'),
                             ),
                           ],
-                        ],
+                        ),
                       ),
-                    ),
+                    ],
                   ),
-                  const SizedBox(height: 30),
-                  // Test section
-                  Card(
-                    margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: Column(
-                        children: [
-                          Text('Test Functions',
-                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                          SizedBox(height: 8),
-                          Text('Simulate individual locations:',
-                              style: TextStyle(color: Colors.grey)),
-                          SizedBox(height: 8),
-                          // Test buttons for individual areas
-                          Wrap(
-                            alignment: WrapAlignment.center,
-                            spacing: 10,
-                            runSpacing: 10,
-                            children: [
-                              ElevatedButton(
-                                onPressed: () => _simulateLocation(31.25, 121.45),
-                                child: const Text('Area 1'),
-                              ),
-                              ElevatedButton(
-                                onPressed: () => _simulateLocation(31.35, 121.55),
-                                child: const Text('Area 2'),
-                              ),
-                              ElevatedButton(
-                                onPressed: () => _simulateLocation(31.45, 121.65),
-                                child: const Text('Area 3'),
-                              ),
-                              ElevatedButton(
-                                onPressed: () => _simulateLocation(31.45, 121.55),
-                                child: const Text('Area 4'),
-                              ),
-                              ElevatedButton(
-                                onPressed: () => _simulateLocation(30.0, 120.0),
-                                child: const Text('Leave Area'),
-                              ),
-                            ],
-                          ),
-                          SizedBox(height: 16),
-                          Text('Simulate area sequences:',
-                              style: TextStyle(color: Colors.grey)),
-                          SizedBox(height: 8),
-                          // Test buttons for sequence simulation
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              ElevatedButton(
-                                onPressed: () => _simulateMultipleVisits(['Area 1', 'Area 2', 'Area 3', 'Area 4', 'Area 1']),
-                                child: const Text('Sequence 1'),
-                              ),
-                              const SizedBox(width: 10),
-                              ElevatedButton(
-                                onPressed: () => _simulateMultipleVisits(['Area 4', 'Area 3', 'Area 2', 'Area 1', 'Area 4']),
-                                child: const Text('Sequence 2'),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
     );
   }
-} 
+}
