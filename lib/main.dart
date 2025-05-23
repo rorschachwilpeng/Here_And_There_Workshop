@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'path_music_page.dart';
 
 void main() {
   runApp(const MyApp());
@@ -693,12 +694,12 @@ class _HomePageState extends State<HomePage> {
             },
             tooltip: 'Reload music engine',
           ),
-          ElevatedButton(
-            onPressed: _testAddAllAreas,
-            child: const Text('Test adding all areas'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.purple,
-            ),
+          IconButton(
+            icon: Icon(Icons.music_note),
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(builder: (context) => PathMusicPage()));
+            },
+            tooltip: '体验音乐路径',
           ),
         ],
       ),
